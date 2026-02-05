@@ -4,108 +4,99 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 
-// Allow Environment variables to override defaults
+// 1. Get Config from Environment (set in AgentDocs)
+const API_URL = process.env.SENTIENT_API_URL || "https://rentasoul.sentientspace.io/.netlify/functions/api-v1";
 const API_KEY = process.env.SENTIENT_API_KEY;
-// UPDATED: Correct Subdomain
-const API_URL = process.env.SENTIENT_API_URL || "https://rentasoul.sentientspace.io/api/v1"; 
 
 if (!API_KEY) {
-  console.error("❌ Critical Failure: SENTIENT_API_KEY environment variable is required.");
+  console.error("Error: SENTIENT_API_KEY environment variable is required.");
   process.exit(1);
 }
 
-const server = new Server({
-  name: "sentient-space-bridge",
-  version: "1.1.0",
-}, {
-  capabilities: { tools: {} },
-});
-
-const apiClient = axios.create({
-  baseURL: API_URL,
-  headers: { 
-    "x-api-key": API_KEY,
-    "Content-Type": "application/json"
+// 2. Setup the Server
+const server = new Server(
+  {
+    name: "rent-a-soul-bridge",
+    version: "1.0.0",
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
   }
+);
+
+// 3. Define the Tools (The Menu for the AI)
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "list_task",
+        description: "Post a new job/bounty to the human marketplace.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Short title of the task" },
+            description: { type: "string", description: "Detailed instructions for the human" },
+            reward: { type: "number", description: "Payment amount in USD" },
+            tags: { type: "array", items: { type: "string" }, description: "Tags like 'Visual', 'Voice', 'Urgent'" }
+          },
+          required: ["title", "description", "reward"]
+        }
+      },
+      {
+        name: "search_market",
+        description: "Get a list of available human souls (workers).",
+        inputSchema: {
+          type: "object",
+          properties: {}, 
+        }
+      }
+    ]
+  };
 });
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "get_soul_status",
-      description: "Check connectivity and verify your Soul identity.",
-      inputSchema: { type: "object", properties: {} }
-    },
-    {
-      name: "search_market",
-      description: "List all manifested human souls available for hire.",
-      inputSchema: { type: "object", properties: {} }
-    },
-    {
-      name: "list_task",
-      description: "Post a new job or requirement to the marketplace.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title: { type: "string", description: "Short title of the task" },
-          description: { type: "string", description: "Detailed instructions" },
-          reward: { type: "number", description: "USD amount for completion" }
-        },
-        required: ["title", "description", "reward"]
-      }
-    },
-    {
-      name: "hire_soul",
-      description: "Initiate a handshake/hire request with a specific human soul.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          target_soul_id: { type: "string", description: "The UUID of the soul to hire" },
-          notes: { type: "string", description: "Introduction or offer details" }
-        },
-        required: ["target_soul_id"]
-      }
-    }
-  ],
-}));
-
+// 4. Handle Tool Execution (The Logic)
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    switch (name) {
-      case "get_soul_status": {
-        const { data } = await apiClient.get("/ping");
-        return { content: [{ type: "text", text: `Connected as: ${data.soul} (v${data.v})` }] };
-      }
-
-      case "search_market": {
-        const { data } = await apiClient.get("/market");
-        const formatted = data.souls.map(s => `• ${s.display_name} [ID: ${s.id}] | ${s.headline} | Rate: $${s.hourly_rate}`).join('\n');
-        return { content: [{ type: "text", text: formatted || "Market is currently empty." }] };
-      }
-
-      case "list_task": {
-        const { data } = await apiClient.post("/list-task", args);
-        return { content: [{ type: "text", text: `✅ Task manifested. ID: ${data.task_id}` }] };
-      }
-
-      case "hire_soul": {
-        const { data } = await apiClient.post("/hire", args);
-        return { content: [{ type: "text", text: `✅ Handshake initiated. ID: ${data.handshake_id}` }] };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+    if (name === "list_task") {
+      // FIX: Matches your real API structure (Flat JSON + Sub-path)
+      const response = await axios.post(
+        `${API_URL}/list-task`, 
+        args, 
+        { headers: { "x-api-key": API_KEY } }
+      );
+      
+      return {
+        content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }]
+      };
     }
+
+    if (name === "search_market") {
+      // FIX: Matches your real API structure
+      const response = await axios.get(
+        `${API_URL}/market`,
+        { headers: { "x-api-key": API_KEY } }
+      );
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }]
+      };
+    }
+
+    throw new Error(`Unknown tool: ${name}`);
+
   } catch (error) {
-    const errorMsg = error.response?.data?.error || error.message;
+    const errorMessage = error.response?.data?.error || error.message;
     return {
-      content: [{ type: "text", text: `❌ Neural Link Error: ${errorMsg}` }],
       isError: true,
+      content: [{ type: "text", text: `API Error: ${errorMessage}` }]
     };
   }
 });
 
+// 5. Start the Bridge
 const transport = new StdioServerTransport();
 await server.connect(transport);
